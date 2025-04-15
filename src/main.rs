@@ -341,7 +341,7 @@ impl Behavior<MockPanel> for MyBehavior {
         &mut self,
         tiles: &mut Tiles<MockPanel>,
         ui: &mut egui::Ui,
-        _tab_id: Id,
+        _tab_id: Id, // This is egui::Id, not TileId
         tile_id: TileId,
         tab_state: &TabState,
     ) -> Response {
@@ -352,41 +352,37 @@ impl Behavior<MockPanel> for MyBehavior {
         let title = self.tab_title_for_pane(pane);
         let is_permanent = pane.is_permanent;
 
-        // Use a single horizontal layout for the whole tab content
-        // The response of this layout determines drag sense etc.
-        let response = ui.horizontal(|ui| {
-            // Selectable label for the title
-            let label_response = ui.selectable_label(tab_state.active, title);
-            
-            // Only show undock button if NOT permanent
+        // Get the response of the whole horizontal layout block
+        let outer_response = ui.horizontal(|ui| {
+            // Selectable label - Set to only sense clicks
+            let label_response = ui.selectable_label(tab_state.active, title)
+                .interact(egui::Sense::click()); // CLICK ONLY
+
+            // Handle activation click based on this label's response
+            if label_response.clicked() && !tab_state.active {
+                 println!("[DEBUG] Tab clicked: {:?}, Queueing RequestActivateTab.", tile_id);
+                self.event_queue
+                    .borrow_mut()
+                    .push(UIEvent::RequestActivateTab { tile_id });
+            }
+
+            // Undock button logic (remains the same)
             if !is_permanent { 
                 let undock_button = egui::Button::new("⏏") 
                     .small()
-                    .frame(false); // Make it less intrusive
+                    .frame(false);
                 if ui.add(undock_button).on_hover_text("Undock Panel").clicked() {
-                    // Use the event queue, no need to return anything special here
                     self.event_queue
                         .borrow_mut()
                         .push(UIEvent::UndockPanel { tile_id });
                 }
             } 
-            
-            // Return the label response for click detection below
-            label_response 
-        }).inner; // Get the response of the inner label
+        }); // outer_response now contains the Response of the horizontal layout
 
-        // Check for activation click based on the label's response
-        // Important: Do this *after* the horizontal layout is built
-        if response.clicked() && !tab_state.active {
-            println!("[DEBUG] Tab clicked: {:?}, Queueing RequestActivateTab.", tile_id);
-            self.event_queue
-                .borrow_mut()
-                .push(UIEvent::RequestActivateTab { tile_id });
-        }
-
-        // Return the response of the *entire horizontal layout* 
-        // This response should correctly sense clicks and drags for egui_tiles default handling
-        response.union(ui.rect_contains_pointer(ui.max_rect())) // Ensure full area senses hover/drag
+        // Return the response of the entire horizontal layout.
+        // Since the interactable label within it only senses clicks,
+        // this *should* prevent egui_tiles from detecting a drag start.
+        outer_response.response
     }
 
     // REQUIRED: Defines the title displayed in a tab.
