@@ -1,0 +1,14 @@
+# Cursor Rules for ui_prototype_tiles project
+
+# General Preferences
+# - This is an experiment: Prioritize learning quickly over perfect code initially.
+# - Run the app frequently: Automatically run `cargo run` after code edits for user testing.
+
+# Git Preferences
+# - Ask before performing Git operations (commit, push, checkout, etc.) unless explicitly requested.
+# - Git username: seahorse-ai-ryan
+
+# Code Style / Implementation Notes
+# - Button Placement: Prefer egui::Area outside ScrollArea for Dock/Undock buttons.
+# - Event Queue: Use the event queue pattern for state modifications triggered by UI.
+# - Logging: Include detailed [DEBUG] and [INFO] logging during development. 

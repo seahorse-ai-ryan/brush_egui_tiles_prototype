@@ -3,6 +3,11 @@ name = "ui_prototype_tiles"
 version = "0.1.0"
 edition = "2021"
 
+# Explicitly define the main binary
+[[bin]]
+name = "ui_prototype_tiles"
+path = "src/app.rs"
+
 [dependencies]
 eframe = "0.31.1"
 egui_tiles = "0.12.0"
