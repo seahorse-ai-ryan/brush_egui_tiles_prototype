@@ -4,6 +4,9 @@ use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
+// We need wasm-bindgen itself for JsCast to be found correctly sometimes
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 // Basic trait for all panels in our application
 pub trait AppPanel {
@@ -678,6 +681,7 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(frame)
             .show(ctx, |ui| {
+                // Restore the tree UI
                 self.tree.ui(&mut self.tree_ctx, ui);
             });
 
@@ -731,7 +735,10 @@ impl eframe::App for App {
     }
 }
 
+// Native entry point
+#[cfg(not(target_arch = "wasm32"))]
 pub fn main() -> Result<(), eframe::Error> {
+    // Use NativeOptions for desktop
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
@@ -740,9 +747,39 @@ pub fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
     
+    // Run the native application
     eframe::run_native(
         "UI Prototype Tiles",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+} 
+
+// Web entry point
+#[cfg(target_arch = "wasm32")]
+pub fn main() {
+    // Redirect `log` message to `console.log` and friends:
+    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+
+    let web_options = eframe::WebOptions::default();
+
+    // Define the async main function for web
+    wasm_bindgen_futures::spawn_local(async {
+        // Get the canvas element
+        let runner = eframe::WebRunner::new();
+        let canvas = web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| doc.get_element_by_id("the_canvas_id"))
+            .and_then(|elem| elem.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("Could not find canvas element with id='the_canvas_id'");
+
+        runner
+            .start(
+                canvas, // Pass the actual canvas element
+                web_options,
+                Box::new(|cc| Ok(Box::new(App::new(cc)))),
+            )
+            .await
+            .expect("failed to start eframe");
+    });
 } 

@@ -75,19 +75,33 @@ The prototype allows users to:
 *   **State Corruption (Resolved):** Initial crashes during docking/closing were likely due to attempting state modification directly in UI logic or incorrect handling of tile ownership/removal. The event queue pattern resolved this.
 *   **Tab Reordering (Works):** Standard tab reordering functions correctly with the default `Behavior`. Previous issues were caused by custom overrides.
 *   **Floating Window Resizing (Mostly Stable):** Seems okay, using `ScrollArea` helps.
-*   **Clean Implementation Approach:** Starting fresh from Brush's app.rs structure yielded a much more stable foundation by focusing on the core egui_tiles functionality first, with future plans to carefully add floating window features.
+*   **Button Glitches (Identified):** Placing Dock/Undock buttons using `egui::Area` inside panel content causes layering and resize issues (buttons appearing through windows, detaching on resize). **Resolution:** Move buttons to `Behavior::tab_ui` override.
+*   **Web Build Setup (Completed):** Successfully configured the project for web deployment using `trunk`.
+    *   Requires an `index.html` file at the project root.
+    *   `Cargo.toml` needs web-specific dependencies: `wasm-bindgen`, `wasm-bindgen-futures`, `log`, `web-sys` (with features like `Document`, `Window`, `Element`, `HtmlCanvasElement`).
+    *   Requires conditional compilation (`#[cfg(...)]`) in `src/app.rs` for separate `main` functions (native vs. web).
+    *   The web `main` function needs to use `web-sys` to get the HTML canvas element by ID and pass it to `eframe::WebRunner::start`.
+    *   `trunk build` is useful for checking compilation errors without starting the server.
+    *   `trunk serve` runs the development server with hot-reloading.
+*   Clean Implementation Approach: Starting fresh from Brush's app.rs structure yielded a much more stable foundation by focusing on the core egui_tiles functionality first, with future plans to carefully add floating window features.
 
 ## 6. Refined Implementation Strategy
 
 *   **Stage 1 (Completed):** Implement clean Brush-like UI with tabs and stable dragging behavior.
-*   **Stage 2 (Next):** Carefully add floating window and docking/undocking capabilities, following the detailed plan in Section 12.
-*   **Stage 3 (Future):** Implement more advanced features like layout persistence.
+*   **Stage 2 (Next):** Carefully add floating window and docking/undocking capabilities, following the detailed plan in Section 12, prioritizing the use of `PanelId` enum and `Behavior::tab_ui` for buttons.
+*   **Stage 3 (Future):** Implement more advanced features like layout persistence and context-aware docking restoration.
+
+**External Feedback:** Additional feedback and analysis were provided by external AI agents. See [04-mini_feedback.md](./04-mini_feedback.md) for details and evaluation. Key takeaways influencing this plan are incorporated below.
 
 ## 7. Alternative UX/Layout Considerations
 
 (Keep for future reference if button-based UX proves insufficient.)
 *   Explore newer versions of `egui_tiles` for potentially improved drag/drop handling for advanced interactions.
 *   Consider custom drag-and-drop implementations outside of `egui_tiles` default behavior if needed for drag-to-dock.
+*   Layout persistence (saving/loading - requires manual serialization).
+*   Consider more advanced features based on limitations and challenges.
+*   **Context-aware docking/restoration:** Enhance docking to remember the last parent container and reopening to restore panels to their last known state (docked container or floating rect/size).
+*   **Web Compatibility:** Ensure changes work in web builds using `trunk serve`.
 
 ## 8. Current Status & Next Steps (Final)
 
@@ -124,29 +138,64 @@ The prototype allows users to:
 3.  **Advanced Features:**
     *   Layout persistence (saving/loading - requires manual serialization).
     *   Consider more advanced features based on limitations and challenges.
+    *   **Context-aware docking/restoration:** Enhance docking to remember the last parent container and reopening to restore panels to their last known state (docked container or floating rect/size).
+    *   **Web Compatibility:** Ensure changes work in web builds using `trunk serve`.
 
 ## 9. Open Questions / Considerations (`egui_tiles`)
 
 *   **Simplification Interaction:** How best to define initial layouts with single-child `Tabs` containers if needed? (Current approach works by letting simplification run).
 *   **Layout Persistence:** Best practices for serializing/deserializing `egui_tiles::Tree` state? (Requires defining custom serializable structures).
+*   **State Management:** Evaluate transitioning to a single authoritative data model for panel state in the future (Ref: [04-mini_feedback.md](./04-mini_feedback.md) - Arch #8).
 *   Explore `egui_tiles` examples/issues for advanced `Behavior` implementations if revisiting drag/drop.
 
 ## 10. Code Snippets / Implementation Details
 
-*   **Event Queue System:** Implemented using `Rc<RefCell<Vec<UIEvent>>>` and processed after UI rendering in `App::update`. Event handlers return `Result<(), LayoutError>`.
+*   **Event Queue System:** Implemented using `Rc<RefCell<Vec<UIEvent>>>` within `Arc<RwLock<AppContext>>` and processed after UI rendering in `App::update`. Event handlers return `Result<(), LayoutError>`. (Note: `Arc<RwLock>` seems necessary for sharing context between `AppTree` and `App` update loop, ref: [04-mini_feedback.md](./04-mini_feedback.md) - Arch #5 Analysis).
 *   **Error Handling:** Uses `Result<(), LayoutError>` for event handlers. Critical operations like docking include recovery logic to reinstate panels into `floating_panels` on failure.
-*   **Current `Behavior` Implementation:**
+*   **Panel Identification:** Refactor to use a `PanelId` enum instead of string titles for keys in `floating_panels` and relevant `UIEvent` variants (Ref: [04-mini_feedback.md](./04-mini_feedback.md) - Arch #1).
+*   **Planned `Behavior` Implementation:**
     ```rust
-    impl Behavior<MockPanel> for MyBehavior {
-        // tab_ui: Renders selectable label + '⏏' undock button. Drag sense likely enabled but drop doesn't reorder.
-        // tab_title_for_pane: Returns pane title.
-        // pane_ui: Calls panel.ui() with unique content & scroll area.
-        // top_bar_right_ui: Renders 'X' button, queues ClosePanelFromTree for active tab. Returns () as required by trait.
-        // simplification_options: Returns custom options (prune_empty_tabs: true, prune_empty_containers: true).
-        // // Other drag methods likely removed or minimal //
+    struct AppTree { /* ... */ }
+    enum PanelId { Settings, Presets, Stats, Dataset, Scene /* ... */ } // Added PanelId
+    type PaneType = Box<dyn AppPanel>; // Or a struct holding the panel and metadata
+
+    impl Behavior<PaneType> for AppTree {
+        fn tab_title_for_pane(&mut self, pane: &PaneType) -> egui::WidgetText { /* ... */ }
+
+        fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane: &mut PaneType) -> UiResponse { /* ... */ }
+
+        // PRIORITIZED: Override tab_ui for inline buttons, replacing Area approach
+        fn tab_ui(&mut self, tiles: &Tiles<PaneType>, ui: &mut egui::Ui, tile_id: TileId, pane: &mut PaneType) -> egui::Response {
+            // Example structure:
+            ui.horizontal(|ui| {
+                // Get panel id (assuming PaneType holds it or can derive it)
+                // let panel_id = pane.id(); // Example
+
+                // Undock button (only shown when docked)
+                if ui.small_button("⏏").clicked() {
+                     // Queue UndockPanel event using panel_id and tile_id
+                     // self.context.events.borrow_mut().push(UIEvent::UndockPanel { panel_id, tile_id });
+                }
+
+                // Label with drag sense
+                let title = self.tab_title_for_pane(pane);
+                let response = ui.label(title).sense(egui::Sense::click_and_drag());
+
+                // TODO: Add inline Close button maybe?
+
+                response // Return the label's response for drag detection
+            }).response
+        }
+
+        fn simplification_options(&self) -> SimplificationOptions { /* ... */ }
+
+        fn gap_width(&self, _style: &egui::Style) -> f32 { /* ... */ }
+
+        // Removed: top_bar_right_ui (prefer inline controls in tab_ui)
+        // Removed: Other drag methods likely removed or minimal (using default drag)
     }
     ```
-*   **Key State Handling Functions:** (All implemented and working in previous prototype)
+*   **Key State Handling Functions:** (Existing functions to be potentially adapted for `PanelId` and context-aware docking)
     *   `handle_dock_panel`
     *   `handle_undock_panel`
     *   `handle_close_from_tree`
@@ -175,52 +224,57 @@ Based on our experience developing the tab dragging functionality, here's a deta
     *   Added `[[bin]]` section to `Cargo.toml` pointing to `src/app.rs`.
 
 2.  **Add State Storage for Floating Windows (Completed)**
-   - Added `FloatingPanelState` struct.
-   - Added `floating_panels: HashMap<String, FloatingPanelState>` to `App`.
-   - Initialized `floating_panels` in `App::new()`.
+    *   Added `FloatingPanelState` struct.
+    *   Added `floating_panels: HashMap<PanelId, FloatingPanelState>` to `App` (Changed key to `PanelId`).
+    *   Initialized `floating_panels` in `App::new()`.
 
 3.  **Implement Events System (Completed)**
-    *   Added `UIEvent` enum.
+    *   Added `UIEvent` enum (variants to use `PanelId`).
     *   Added `events: Rc<RefCell<Vec<UIEvent>>>` to `AppContext`.
     *   Added `process_events()` method stub to `App`.
 
-### Phase 2: Undocking Implementation (Partially Completed)
+4.  **Define `PanelId` Enum (TODO)**
+    *   Create `enum PanelId { Settings, Scene, ... }`.
+    *   Update `floating_panels` HashMap key type.
+    *   Update `UIEvent` variants (`UndockPanel`, `DockPanel`, `ClosePanel`, `ReopenPanel`) to use `PanelId` instead of `String`.
+    *   Update relevant handler function signatures (`handle_dock_panel`, etc.).
+    *   Ensure `AppPanel` trait or implementations provide a way to get the `PanelId`.
 
-1.  **Add Dock/Undock Button Inside Panel Content**
-    *   Added `is_floating: bool` parameter to `AppPanel::ui` trait and updated implementations.
-    *   Updated `AppTree::pane_ui` and floating window loop in `App::update` to pass correct `is_floating` value.
-    *   **Chosen Strategy:** Use `egui::Area` positioned in the bottom-right corner of the panel's allocated space (outside any `ScrollArea`).
-        *   Get the panel's outer rect (`ui.available_rect_before_wrap()`).
-        *   Create the Area (`egui::Area::new(...).fixed_pos(...).order(egui::Order::Foreground)`).
-        *   Inside the Area's `show` closure, check `is_floating`:
-            *   If `true`, show Dock button ("⚓") queuing `UIEvent::DockPanel`.
-            *   If `false`, show Undock button ("⏏") queuing `UIEvent::UndockPanel`.
-        *   This is implemented for Settings, Presets, Stats, and Dataset panels.
-    *   **Note:** `tile_id` is available when `is_floating` is false.
+### Phase 2: Undocking Implementation (Partially Completed - Needs Rework)
 
-2.  **Implement Undock Handler (Completed)**
-    *   Added `handle_undock_panel()` method to `App` within the `process_events` logic.
-    *   Logic includes: finding parent, removing tile from parent, removing tile from tree, creating `FloatingPanelState`, adding to `floating_panels`, simplifying parent.
+1.  **Add Undock Button via `Behavior::tab_ui` Override (TODO - Replaces Area approach)**
+    *   **Chosen Strategy:** Implement `Behavior::tab_ui` override.
+    *   Inside the override, use `ui.horizontal` to place an Undock button ("⏏") next to the standard tab label.
+    *   The label itself should retain `Sense::click_and_drag()` for drag functionality.
+    *   Button click queues `UIEvent::UndockPanel { panel_id: ..., tile_id: ... }`.
+    *   This replaces the `egui::Area` buttons previously added in `AppPanel::ui` methods and resolves associated layering/resize issues.
+    *   **Remove** the `egui::Area` code from individual panel `ui` methods (Settings, Presets, Stats, Dataset).
+    *   **Note:** Dock button ("⚓") will be handled within the floating window UI (Phase 3).
 
-3.  **Add Floating Window Rendering (Completed)**
-    *   Added loop in `App::update()` to render `egui::Window` for panels in `floating_panels` where `is_open` is true.
-    *   Window uses panel title and stored `rect`.
-    *   Calls `panel.ui` passing `is_floating: true`.
-    *   Handles window close ('X') button by queuing `UIEvent::ClosePanel`.
+2.  **Implement Undock Handler (Completed - Adapt for `PanelId`)**
+    *   Adapt `handle_undock_panel()` to accept and use `PanelId`.
+    *   **Enhancement:** Store the `parent_id` (the container the panel was docked in) within the `FloatingPanelState` when undocking. This is needed for context-aware docking later.
+
+3.  **Add Floating Window Rendering (Completed - Adapt for `PanelId`)**
+    *   Adapt loop in `App::update()` to iterate over `floating_panels` using `PanelId`.
+    *   Window title can be derived from the `PanelId` or `AppPanel::title()`.
+    *   Calls `panel.ui`. **Remove** `is_floating` parameter from `AppPanel::ui` if no longer needed after removing Area buttons. (Alternatively, keep it for the floating window's Dock button).
+    *   Handles window close ('X') button by queuing `UIEvent::ClosePanel { panel_id: ..., is_floating: true }`.
     *   Stores updated window `rect` in `FloatingPanelState`.
+    *   **Add Dock Button:** Inside the floating window's UI (likely within the `panel.ui` call, potentially still using `egui::Area` carefully or another method), add a Dock button ("⚓") that queues `UIEvent::DockPanel { panel_id: ... }`.
 
 ### Phase 3: Manual Testing & Debugging (In Progress)
 
 1.  **Test Undocking & Button Behavior**
-    *   Verify Dock/Undock button appears correctly in both states for Settings, Presets, Stats, Dataset.
-    *   Verify button queues the correct event.
+    *   Verify Undock button appears correctly in tab bar via `Behavior::tab_ui`.
+    *   Verify button queues the correct event with `PanelId` and `tile_id`.
     *   Verify panel disappears from tree and appears as window on Undock.
-    *   Verify window appearance (title, resizable, close button).
+    *   Verify window appearance (title, resizable, close button, **Dock button**).
     *   Check initial window size/position.
     *   Verify tree remains functional after undocking.
-    *   **TODO:** Investigate/fix button layering issue where docked panel buttons can appear through floating windows.
-    *   **TODO:** Investigate/fix resize glitch where Area button follows mouse beyond window bounds when shrinking window very small.
-    *   **TODO:** Experiment with `Window::min_size` / `Window::max_size` to potentially mitigate resize glitches at small sizes.
+    *   ~~**TODO:** Investigate/fix button layering issue where docked panel buttons can appear through floating windows.~~ (Resolved by moving to `tab_ui`)
+    *   ~~**TODO:** Investigate/fix resize glitch where Area button follows mouse beyond window bounds when shrinking window very small.~~ (Resolved by moving to `tab_ui`)
+    *   **TODO:** Experiment with `Window::min_size` / `Window::max_size` to potentially mitigate resize glitches at small sizes (if any remain with floating window content).
 
 2.  **Fix Common Issues (Logger Setup)**
     *   Add detailed logging for all operations.
@@ -233,42 +287,59 @@ Based on our experience developing the tab dragging functionality, here's a deta
     *   Undocking and closing the window immediately.
     *   Undocking and docking immediately.
     *   Rapidly undocking/docking multiple panels.
-    *   **TODO:** Decide if "Scene" panel should be undockable/closable or permanent. Implement undocking/docking for it if desired.
-    *   **TODO:** Test docking when *no* tab containers exist in the tree (should `find_dock_target` handle this gracefully, e.g., by creating a new root container?).
+    *   **TODO:** Decide if "Scene" panel should be undockable/closable or permanent. Implement `tab_ui` button logic conditionally if needed.
+    *   **TODO:** Test docking when *no* tab containers exist in the tree (should `find_dock_target` handle this gracefully by creating a new root container?).
 
-### Phase 4: Docking From Floating Windows (Partially Completed)
+### Phase 4: Docking From Floating Windows (Partially Completed - Needs Rework)
 
-1.  **Implement Dock Handler (Completed)**
-    *   Added `handle_dock_panel()` method.
+1.  **Implement Dock Handler (Completed - Adapt for `PanelId` and Context)**
+    *   Adapt `handle_dock_panel()` to accept `PanelId`.
+    *   Update logic to use context-aware docking (see Step 2 below).
     *   Logic includes: removing from `floating_panels`, finding target, inserting pane into tree, adding to target container, activating tab, basic recovery.
 
-2.  **Target Container Selection Strategy (TODO)**
-    *   **Current:** Finds the *first* `Tabs` container.
-    *   **TODO:** Handle case where no `Tabs` container exists.
-    *   **Future:** Implement smarter docking (e.g., dock back to original container/split, dock to nearest, allow user selection, create new split).
+2.  **Target Container Selection Strategy (TODO - Implement Context-Aware)**
+    *   **Primary Strategy:** Retrieve the stored `last_parent_id` from `FloatingPanelState`.
+        *   Attempt to dock back into the container with `last_parent_id` if it still exists and is a `Tabs` container (or adaptable).
+    *   **Fallback 1:** If `last_parent_id` container is gone, attempt to find its last known sibling/neighbor and perform a split (e.g., right split) to create a new `Tabs` container for the docking panel.
+    *   **Fallback 2:** If no suitable original or neighbor container found, find the *first available* `Tabs` container in the tree.
+    *   **Fallback 3:** If *no* `Tabs` container exists, create a new root (e.g., a horizontal split with the existing root, or replace root if empty) containing a new `Tabs` container for the panel.
+    *   **Refinement:** This logic requires helper functions to check tile existence and find neighbors/suitable insertion points.
 
 ### Phase 5: Close and Reopen Management (Next)
 
-1.  **Window Close Handling (Completed in Phase 2)**
+1.  **Window Close Handling (Completed in Phase 2 - Adapt for `PanelId`)**
+    *   Ensure close event uses `PanelId`.
 
-2.  **Add Close Button Inside Panel Content (TODO)**
-    *   Add a Close button ('X') using the `egui::Area` strategy.
-    *   On click, queue `UIEvent::ClosePanel { panel_title: self.title(), is_floating }`.
-    *   Consider placement (e.g., top-right corner vs. bottom-right).
+2.  **Add Close Button (TODO - Decide Location)**
+    *   **Option 1 (Tab Bar):** Add an inline Close button ('X') within the `Behavior::tab_ui` override, next to the Undock button. Queues `UIEvent::ClosePanel { panel_id: ..., is_floating: false }`. This keeps controls consolidated.
+    *   **Option 2 (Panel Content):** Add a Close button using `egui::Area` within the panel content (similar to the original Dock/Undock, but only for Close). Might be needed if `tab_ui` becomes too crowded.
+    *   Choose one strategy for consistency.
 
-3.  **Implement Close Handler (Partially Implemented)**
-    *   `handle_close_panel()` implemented for `is_floating: true`.
-    *   **TODO:** Implement logic for `is_floating: false` (closing a docked panel).
+3.  **Implement Close Handler (Partially Implemented - Adapt for `PanelId`, Implement Docked)**
+    *   Adapt `handle_close_panel()` for `PanelId`.
+    *   Implement logic for `is_floating: false` (closing a docked panel):
+        *   Find the panel's `tile_id`.
+        *   Find its `parent_id`.
+        *   Remove the tile from the parent container.
+        *   Remove the tile from `tree.tiles`, retrieving the `Panel`.
+        *   Create a `FloatingPanelState` with `is_open: false`, store the `Panel`, and potentially the `last_parent_id` and last known floating `rect` (if available).
+        *   Add/update the entry in `floating_panels`.
+        *   Simplify the parent container.
     *   **TODO:** Handle closing the last panel in the tree (should tree become empty or show a placeholder?).
 
 4.  **Add View Menu for Reopening (TODO)**
     *   Add top menu bar in `App::update()`.
-    *   Implement submenu listing panels where `is_open` is false in `floating_panels`.
-    *   **TODO:** Explore alternative menu presentations.
+    *   Implement submenu listing panels based on `PanelId` where `is_open` is false in `floating_panels`.
+    *   Use icons (Ref: [04-mini_feedback.md](./04-mini_feedback.md) - UI #2) and tooltips (UI #6) here.
+    *   Menu item click queues `UIEvent::ReopenPanel { panel_id: ... }`.
 
 5.  **Implement Reopen Handler (TODO)**
-    *   Add `handle_reopen_panel()` method.
-    *   Implement logic to set `is_open = true` and assign default rect if needed.
+    *   Add `handle_reopen_panel()` method accepting `PanelId`.
+    *   **Stateful Restore Logic:**
+        *   Check the state stored in `floating_panels` for the given `PanelId`.
+        *   **If last state was floating:** Set `is_open = true`. The existing `rect` will be used by the rendering loop.
+        *   **If last state was docked:** Attempt to dock the panel back using the context-aware docking logic (similar to `handle_dock_panel`, using the stored `last_parent_id` etc.). This might involve removing the panel from `floating_panels` and re-inserting into the tree. Assign a default floating rect only if docking fails completely and it needs to be opened as a floating window.
+    *   Add UI hints on already open (Ref: [04-mini_feedback.md](./04-mini_feedback.md) - UI #6).
 
 ### Phase 6: Advanced Features (Later)
 
@@ -282,6 +353,8 @@ Based on our experience developing the tab dragging functionality, here's a deta
 3.  **Undock All / Dock All (TODO)**
     *   Consider adding buttons or menu options for mass dock/undock operations.
 
+4.  **Single Data Model:** Consider refactoring to a single authoritative state map `HashMap<PanelId, PanelState>` where `PanelState` tracks location (`Docked(TileId, last_parent_id)`, `Floating(Rect)`) and open status (Ref: [04-mini_feedback.md](./04-mini_feedback.md) - Arch #8). This is a significant refactor, best done after core features are stable.
+
 ### Out of Scope for Initial Floating Window Implementation
 
 *   **Drag-to-Dock:** Dragging a floating window onto the main layout to dock it.
@@ -292,10 +365,15 @@ Based on our experience developing the tab dragging functionality, here's a deta
 
 For each phase:
 1. **Regression Testing**
-   - Verify all existing functionality still works
-   - Ensure tab dragging remains functional
+   - Verify all existing functionality still works (tab dragging, splitting).
+   - Ensure undocking/docking/closing/reopening works as expected.
 
-2. **Manual Test Cases**
+2. **Web Compatibility Testing (NEW)**
+   - Regularly build and test using `trunk serve`.
+   - Ensure UI elements render correctly and events function as expected in a web browser.
+   - Identify and fix any desktop-specific assumptions or APIs.
+
+3. **Manual Test Cases**
    - Create a testing matrix covering all actions
    - Test error cases (e.g., dock when target container is missing)
    - Test with different panel combinations
@@ -325,9 +403,11 @@ During development, several approaches were explored and discarded:
 
 ## 14. Next Steps (Resuming)
 
-1.  Continue with **Phase 5: Close and Reopen Management**.
-    *   Implement close button for docked panels (Phase 5, Step 2 & 3).
-    *   Implement View menu and `handle_reopen_panel` (Phase 5, Step 4 & 5).
-2.  Address remaining TODOs from Phase 3 testing (layering, resize glitch, Scene panel, empty tree docking).
-3.  Refine Docking target strategy (Phase 4, Step 2).
-4.  Consider advanced features from Phase 6. 
+1.  **Refactor for `PanelId` (Phase 1, Step 4).**
+2.  **Implement `Behavior::tab_ui` override for Undock button** (Phase 2, Step 1), removing old `Area` buttons.
+3.  **Adapt Handlers:** Update `handle_undock_panel`, `handle_dock_panel`, `handle_close_panel` for `PanelId`.
+4.  **Implement Context-Aware Docking** (Phase 4, Step 2) and store `last_parent_id` during undock (Phase 2, Step 2 enhancement).
+5.  **Continue with Phase 5: Close and Reopen Management**, implementing the Close button, `handle_close_panel` for docked tabs, the View Menu, and `handle_reopen_panel` with stateful restore logic.
+6.  Address remaining TODOs from Phase 3 testing (Scene panel, empty tree docking).
+7.  **Integrate Web Testing:** Start running `trunk serve` periodically. 
+8.  **Address Build Warnings:** Clean up unused imports and visibility issues identified during `trunk build`. 

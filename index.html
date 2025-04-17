@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>UI Prototype Tiles</title>
+    <link data-trunk rel="rust" href="Cargo.toml"/>
+    <style>
+        /* Basic styling to make the canvas fill the viewport */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Prevent scrollbars */
+            background-color: #1e1e1e; /* Match dark theme */
+        }
+        canvas {
+            display: block; /* Remove extra space below canvas */
+            position: absolute; /* Position relative to body */
+            top: 0;
+            left: 0;
+            width: 100%;      /* Fill width */
+            height: 100%;     /* Fill height */
+        }
+    </style>
+</head>
+<body>
+    <!-- Trunk will insert the wasm loader script here -->
+    <canvas id="the_canvas_id"></canvas>
+</body>
+</html> 

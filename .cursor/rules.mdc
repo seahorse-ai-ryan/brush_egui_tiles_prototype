@@ -1,0 +1,36 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Cursor Rules for ui_prototype_tiles project
+
+## General Preferences
+- This is an experiment: Prioritize learning quickly over perfect code initially.
+- Run the app frequently: Use the appropriate terminal command workflow (see below).
+
+## Git Preferences
+- Ask before performing Git operations (commit, push, checkout, etc.) unless explicitly requested.
+- Git username: seahorse-ai-ryan
+
+## Code Style / Implementation Notes
+- Button Placement: Prefer `egui::Area` outside `ScrollArea` for Dock/Undock buttons. (Note: This might be superseded by moving buttons to `Behavior::tab_ui` as per latest plan).
+- Event Queue: Use the event queue pattern for state modifications triggered by UI.
+- Logging: Include detailed [DEBUG] and [INFO] logging during development. 
+
+## Terminal Command Workflow
+
+- **Native Testing:**
+  - Use `cargo run` to build and run the native desktop version.
+  - You can run this directly using the terminal tool (`is_background=False`) as it completes relatively quickly and shows errors inline.
+
+- **Web Testing:**
+  - **Step 1: Check Compilation:**
+    - First, run `trunk build` to compile the WebAssembly version and check for errors.
+    - Use the terminal tool (`is_background=False`) to run this command so that compilation output and errors appear directly in chat.
+  - **Step 2: Run Interactively (If Build Succeeds):**
+    - If `trunk build` succeeds, provide the user with the following command in a bash snippet:
+      ```bash
+      trunk serve --open --port 8081
+      ```
+    - **Do not** run `trunk serve` using the terminal tool. The user will run this command in their own terminal to benefit from the persistent server and hot-reloading on code changes. 
