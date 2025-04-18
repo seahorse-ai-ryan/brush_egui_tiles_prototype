@@ -11,19 +11,30 @@ use wasm_bindgen::JsCast;
 // Basic trait for all panels in our application
 pub trait AppPanel {
     fn title(&self) -> String;
+    fn panel_id(&self) -> PanelId;
     fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, tile_id: TileId, is_floating: bool);
     fn inner_margin(&self) -> f32 {
         12.0
     }
 }
 
+// Insert PanelId enum for strong typing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PanelId {
+    Scene,
+    Settings,
+    Presets,
+    Stats,
+    Dataset,
+}
+
 // --- Event System ---
-#[derive(Debug, Clone)] // Added Debug and Clone
+#[derive(Debug, Clone)]
 enum UIEvent {
-    UndockPanel { panel_title: String, tile_id: TileId },
-    DockPanel { panel_title: String },
-    ClosePanel { panel_title: String, is_floating: bool },
-    ReopenPanel { panel_title: String },
+    UndockPanel { panel_id: PanelId, tile_id: TileId },
+    DockPanel { panel_id: PanelId },
+    ClosePanel { panel_id: PanelId, tile_id: Option<TileId> },
+    ReopenPanel { panel_id: PanelId },
 }
 
 // --- Floating Panel State ---
@@ -31,12 +42,13 @@ struct FloatingPanelState {
     panel: Box<dyn AppPanel>,
     is_open: bool,
     rect: Option<egui::Rect>,  // For position/size
+    last_parent_id: Option<TileId>, // Remember where it was docked
 }
 
 // App context to share state between panels
 pub struct AppContext {
     pub egui_ctx: egui::Context,
-    pub events: Rc<RefCell<Vec<UIEvent>>>, // Added event queue
+    pub(crate) events: Rc<RefCell<Vec<UIEvent>>>, // Make pub(crate) to match UIEvent visibility
 }
 
 impl AppContext {
@@ -90,7 +102,7 @@ impl egui_tiles::Behavior<PaneType> for AppTree {
 pub struct App {
     tree: Tree<PaneType>,
     tree_ctx: AppTree,
-    floating_panels: HashMap<String, FloatingPanelState>, // Added floating panels state
+    floating_panels: HashMap<PanelId, FloatingPanelState>, // Use PanelId for floating panels state
     context: Arc<RwLock<AppContext>>, // Keep a direct reference to context
 }
 
@@ -110,39 +122,78 @@ impl AppPanel for ScenePanel {
         "Scene".to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _context: &mut AppContext, _tile_id: TileId, _is_floating: bool) {
+    fn panel_id(&self) -> PanelId {
+        PanelId::Scene
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, _tile_id: TileId, is_floating: bool) {
         ui.heading("Scene View");
         
-        // Draw a simple grid as placeholder
-        let rect = ui.available_rect_before_wrap();
-        let painter = ui.painter();
-        
-        let grid_size = 30.0;
-        let grid_color = egui::Color32::from_rgb(60, 60, 60);
-        
-        for x in (0..(rect.width() as i32)).step_by(grid_size as usize) {
-            let x = rect.left() + x as f32;
-            painter.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                (1.0, grid_color),
+        // Wrap content in a ScrollArea to handle resizing
+        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+            // Allocate desired minimum size or use available space
+            let desired_size = ui.available_size_before_wrap(); // Use available space within scroll area
+            let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+
+            // Draw a simple grid as placeholder within the allocated rect
+            let painter = ui.painter_at(rect);
+            
+            let grid_size = 30.0;
+            let grid_color = egui::Color32::from_rgb(60, 60, 60);
+            
+            for x in (0..(rect.width() as i32)).step_by(grid_size as usize) {
+                let x = rect.left() + x as f32;
+                painter.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    (1.0, grid_color),
+                );
+            }
+            
+            for y in (0..(rect.height() as i32)).step_by(grid_size as usize) {
+                let y = rect.top() + y as f32;
+                painter.line_segment(
+                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                    (1.0, grid_color),
+                );
+            }
+            
+            // Draw a simple circle in the center of the allocated rect
+            let center = rect.center();
+            painter.circle_filled(
+                center, 
+                50.0, // Keep fixed radius for now
+                egui::Color32::from_rgb(100, 150, 250)
             );
-        }
+        }); // End ScrollArea
         
-        for y in (0..(rect.height() as i32)).step_by(grid_size as usize) {
-            let y = rect.top() + y as f32;
-            painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                (1.0, grid_color),
-            );
-        }
-        
-        // Draw a simple circle in the center
-        let center = rect.center();
-        painter.circle_filled(
-            center, 
-            50.0, 
-            egui::Color32::from_rgb(100, 150, 250)
-        );
+        // --- Button Area in Bottom Right --- 
+        let outer_rect = ui.available_rect_before_wrap(); // Use outer_rect for positioning
+        let button_size = egui::vec2(20.0, 20.0);
+        egui::Area::new(ui.id().with("_dock_undock_area")) // Unique ID
+            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0)) // Ensure using outer_rect
+            .order(egui::Order::Foreground) // Revert to Foreground to prevent disappearing
+            .show(ui.ctx(), |ui| {
+                // --- Corrected Logic --- 
+                if is_floating { // Use the correct variable name
+                    // Show Dock button if floating
+                    if ui.button("⚓").on_hover_text("Dock Panel").clicked() {
+                        println!("[DEBUG] Dock button clicked for {:?} panel (Floating)", self.panel_id());
+                        context.events.borrow_mut().push(UIEvent::DockPanel { // Use context without underscore
+                            panel_id: self.panel_id(),
+                        });
+                    }
+                } else {
+                    // Show Undock button if docked 
+                    if ui.button("⏏").on_hover_text("Undock Panel").clicked() {
+                        println!("[DEBUG] Undock button clicked for {:?} panel (Tile ID: {:?})", self.panel_id(), _tile_id);
+                        context.events.borrow_mut().push(UIEvent::UndockPanel { // Use context without underscore
+                            panel_id: self.panel_id(), 
+                            tile_id: _tile_id
+                        });
+                    }
+                }
+                // --- End Corrected Logic --- 
+            });
     }
 }
 
@@ -160,9 +211,11 @@ impl AppPanel for SettingsPanel {
         "Settings".to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, tile_id: TileId, is_floating: bool) {
-        let outer_rect = ui.available_rect_before_wrap(); // Get rect for Area
+    fn panel_id(&self) -> PanelId {
+        PanelId::Settings
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, _tile_id: TileId, is_floating: bool) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| { 
             ui.heading("Model Settings");
             ui.label("Spherical Harmonics Degree:");
@@ -185,36 +238,35 @@ impl AppPanel for SettingsPanel {
             ui.label("Train:");
             ui.add(egui::Slider::new(&mut 30000, 1000..=100000).text("Steps"));
         }); // End of ScrollArea
-
-        // --- Button Area outside ScrollArea --- 
+        
+        // --- Button Area in Bottom Right --- 
+        let outer_rect = ui.available_rect_before_wrap();
         let button_size = egui::vec2(20.0, 20.0);
-        egui::Area::new(ui.id().with("_dock_undock_button_area"))
-            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0))
-            .order(egui::Order::Foreground)
+        egui::Area::new(ui.id().with("_dock_undock_area")) 
+            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0)) 
+            .order(egui::Order::Foreground) // Use Foreground to prevent disappearing
             .show(ui.ctx(), |ui| {
                 if is_floating {
                     // Show Dock button if floating
-                    if ui.button("⚓").clicked() { // Dock icon
-                        println!("[DEBUG] Dock button clicked for Settings panel (Floating)");
+                    if ui.button("⚓").on_hover_text("Dock Panel").clicked() {
+                        println!("[DEBUG] Dock button clicked for {:?} panel (Floating)", self.panel_id());
                         context.events.borrow_mut().push(UIEvent::DockPanel {
-                            panel_title: self.title(),
+                            panel_id: self.panel_id(),
                         });
-                        // TODO: Find a way to signal window close on dock?
                     }
                 } else {
                     // Show Undock button if docked
-                    if ui.button("⏏").clicked() { // Undock icon
-                        println!("[DEBUG] Undock button clicked for Settings panel (Tile ID: {:?})", tile_id);
+                    if ui.button("⏏").on_hover_text("Undock Panel").clicked() {
+                        println!("[DEBUG] Undock button clicked for {:?} panel (Tile ID: {:?})", self.panel_id(), _tile_id);
                         context.events.borrow_mut().push(UIEvent::UndockPanel {
-                            panel_title: self.title(), 
-                            tile_id
+                            panel_id: self.panel_id(), 
+                            tile_id: _tile_id
                         });
                     }
                 }
-            });
-        // --- End Button Area ---
-    }
-}
+            }); // Ensure this }); closes the .show() closure
+    } // Ensure this } closes the ui method
+} // Ensure this } closes the impl AppPanel block
 
 // Presets Panel
 struct PresetsPanel;
@@ -230,9 +282,11 @@ impl AppPanel for PresetsPanel {
         "Presets".to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, tile_id: TileId, is_floating: bool) {
-        let outer_rect = ui.available_rect_before_wrap(); // Get rect for Area
+    fn panel_id(&self) -> PanelId {
+        PanelId::Presets
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, _tile_id: TileId, is_floating: bool) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.heading("Presets");
             
@@ -256,31 +310,31 @@ impl AppPanel for PresetsPanel {
                 // Would save preset in real app
             }
         });
-
-        // --- Button Area outside ScrollArea --- 
+        
+        // --- Button Area in Bottom Right --- 
+        let outer_rect = ui.available_rect_before_wrap();
         let button_size = egui::vec2(20.0, 20.0);
-        egui::Area::new(ui.id().with("_dock_undock_button_area"))
-            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0))
-            .order(egui::Order::Foreground)
+        egui::Area::new(ui.id().with("_dock_undock_area"))
+            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0)) // Ensure using outer_rect
+            .order(egui::Order::Foreground) // Use Foreground to prevent disappearing
             .show(ui.ctx(), |ui| {
-                 if is_floating {
-                    if ui.button("⚓").clicked() {
-                        println!("[DEBUG] Dock button clicked for Presets panel (Floating)");
+                if is_floating {
+                    if ui.button("⚓").on_hover_text("Dock Panel").clicked() {
+                        println!("[DEBUG] Dock button clicked for {:?} panel (Floating)", self.panel_id());
                         context.events.borrow_mut().push(UIEvent::DockPanel {
-                            panel_title: self.title(),
+                            panel_id: self.panel_id(),
                         });
                     }
                 } else {
-                    if ui.button("⏏").clicked() {
-                        println!("[DEBUG] Undock button clicked for Presets panel (Tile ID: {:?})", tile_id);
+                    if ui.button("⏏").on_hover_text("Undock Panel").clicked() {
+                        println!("[DEBUG] Undock button clicked for {:?} panel (Tile ID: {:?})", self.panel_id(), _tile_id);
                         context.events.borrow_mut().push(UIEvent::UndockPanel {
-                            panel_title: self.title(), 
-                            tile_id
+                            panel_id: self.panel_id(), 
+                            tile_id: _tile_id
                         });
                     }
                 }
             });
-        // --- End Button Area ---
     }
 }
 
@@ -298,9 +352,11 @@ impl AppPanel for StatsPanel {
         "Stats".to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, tile_id: TileId, is_floating: bool) {
-        let outer_rect = ui.available_rect_before_wrap(); // Get rect for Area
+    fn panel_id(&self) -> PanelId {
+        PanelId::Stats
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, _tile_id: TileId, is_floating: bool) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.heading("Performance Stats");
             
@@ -340,33 +396,31 @@ impl AppPanel for StatsPanel {
                 ui.label("1.26 GB");
             });
         });
-
-        // --- Button Area outside ScrollArea --- 
-        let button_size = egui::vec2(20.0, 20.0); // Icon only size
-        egui::Area::new(ui.id().with("_dock_undock_button_area")) 
-            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0))
-            .order(egui::Order::Foreground)
+        
+        // --- Button Area in Bottom Right --- 
+        let outer_rect = ui.available_rect_before_wrap();
+        let button_size = egui::vec2(20.0, 20.0);
+        egui::Area::new(ui.id().with("_dock_undock_area"))
+            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0)) // Ensure using outer_rect
+            .order(egui::Order::Foreground) // Use Foreground to prevent disappearing
             .show(ui.ctx(), |ui| {
                 if is_floating {
-                    // Show Dock button if floating
-                    if ui.button("⚓").clicked() { // Dock icon
-                        println!("[DEBUG] Dock button clicked for Stats panel (Floating)");
+                    if ui.button("⚓").on_hover_text("Dock Panel").clicked() {
+                        println!("[DEBUG] Dock button clicked for {:?} panel (Floating)", self.panel_id());
                         context.events.borrow_mut().push(UIEvent::DockPanel {
-                            panel_title: self.title(),
+                            panel_id: self.panel_id(),
                         });
                     }
                 } else {
-                    // Show Undock button if docked
-                    if ui.button("⏏").clicked() { // Undock icon
-                        println!("[DEBUG] Undock button clicked for Stats panel (Tile ID: {:?})", tile_id);
+                    if ui.button("⏏").on_hover_text("Undock Panel").clicked() {
+                        println!("[DEBUG] Undock button clicked for {:?} panel (Tile ID: {:?})", self.panel_id(), _tile_id);
                         context.events.borrow_mut().push(UIEvent::UndockPanel {
-                            panel_title: self.title(), 
-                            tile_id
+                            panel_id: self.panel_id(), 
+                            tile_id: _tile_id
                         });
                     }
                 }
             });
-        // --- End Button Area ---
     }
 }
 
@@ -384,10 +438,11 @@ impl AppPanel for DatasetPanel {
         "Dataset".to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, tile_id: TileId, is_floating: bool) {
-        let outer_rect = ui.available_rect_before_wrap(); // Get rect for Area
+    fn panel_id(&self) -> PanelId {
+        PanelId::Dataset
+    }
 
-        // Reverting to Area for button
+    fn ui(&mut self, ui: &mut egui::Ui, context: &mut AppContext, _tile_id: TileId, is_floating: bool) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.heading("Dataset");
             
@@ -409,31 +464,31 @@ impl AppPanel for DatasetPanel {
                 ui.label("images/DSCF4667.JPG (779×519 rgb)");
             });
         });
-
-        // --- Button Area outside ScrollArea --- 
+        
+        // --- Button Area in Bottom Right --- 
+        let outer_rect = ui.available_rect_before_wrap();
         let button_size = egui::vec2(20.0, 20.0);
-        egui::Area::new(ui.id().with("_dock_undock_button_area"))
-            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0))
-            .order(egui::Order::Foreground)
+        egui::Area::new(ui.id().with("_dock_undock_area"))
+            .fixed_pos(egui::pos2(outer_rect.right() - button_size.x - 5.0, outer_rect.bottom() - button_size.y - 5.0)) // Ensure using outer_rect
+            .order(egui::Order::Foreground) // Use Foreground to prevent disappearing
             .show(ui.ctx(), |ui| {
-                 if is_floating {
-                    if ui.button("⚓").clicked() {
-                        println!("[DEBUG] Dock button clicked for Dataset panel (Floating)");
+                if is_floating {
+                    if ui.button("⚓").on_hover_text("Dock Panel").clicked() {
+                        println!("[DEBUG] Dock button clicked for {:?} panel (Floating)", self.panel_id());
                         context.events.borrow_mut().push(UIEvent::DockPanel {
-                            panel_title: self.title(),
+                            panel_id: self.panel_id(),
                         });
                     }
                 } else {
-                    if ui.button("⏏").clicked() {
-                        println!("[DEBUG] Undock button clicked for Dataset panel (Tile ID: {:?})", tile_id);
+                    if ui.button("⏏").on_hover_text("Undock Panel").clicked() {
+                        println!("[DEBUG] Undock button clicked for {:?} panel (Tile ID: {:?})", self.panel_id(), _tile_id);
                         context.events.borrow_mut().push(UIEvent::UndockPanel {
-                            panel_title: self.title(), 
-                            tile_id
+                            panel_id: self.panel_id(), 
+                            tile_id: _tile_id
                         });
                     }
                 }
             });
-        // --- End Button Area ---
     }
 }
 
@@ -509,20 +564,13 @@ impl App {
             for event in events_to_process {
                 println!("[DEBUG] Event: {:?}", event);
                 let result = match event {
-                    UIEvent::UndockPanel { panel_title, tile_id } => self.handle_undock_panel(panel_title, tile_id),
-                    // Add DockPanel handler call
-                    UIEvent::DockPanel { panel_title } => self.handle_dock_panel(panel_title),
-                    UIEvent::ClosePanel { panel_title, is_floating } => self.handle_close_panel(panel_title, is_floating),
-                    // Placeholder for ReopenPanel
-                    UIEvent::ReopenPanel { .. } => {
-                        println!("[WARN] ReopenPanel not yet implemented.");
-                        Ok(())
+                    UIEvent::UndockPanel { panel_id, tile_id } => self.handle_undock_panel(panel_id, tile_id),
+                    UIEvent::DockPanel { panel_id } => self.handle_dock_panel(panel_id),
+                    UIEvent::ClosePanel { panel_id, tile_id } => self.handle_close_panel(panel_id, tile_id),
+                    UIEvent::ReopenPanel { panel_id } => {
+                        // Call the actual handler
+                        self.handle_reopen_panel(panel_id)
                     }
-                    // Removed catch-all '_' as we should handle all defined events
-                    // _ => {
-                    //     println!("[WARN] Unhandled event type: {:?}", event);
-                    //     Ok(())
-                    // }
                 };
 
                 if let Err(e) = result {
@@ -542,65 +590,100 @@ impl App {
                 return Ok(*id);
             }
         }
-        // TODO: Handle case where no Tabs container exists (e.g., create one?)
+
+        // If no Tabs container is found, return an error.
+        // The user must manually create a suitable spot via splitting first.
         println!("[WARN] No Tabs container found for docking.");
         Err("No suitable Tabs container found for docking.".to_string())
     }
 
     // Handler for docking a floating panel
-    fn handle_dock_panel(&mut self, panel_title: String) -> Result<(), String> {
-        println!("[INFO] Attempting to dock panel '{}'", panel_title);
+    fn handle_dock_panel(&mut self, panel_id: PanelId) -> Result<(), String> {
+        println!("[INFO] Attempting to dock panel '{:?}'", panel_id);
 
-        // 1. Remove panel from floating_panels, get the Panel data
-        let floating_state = self.floating_panels.remove(&panel_title)
-            .ok_or_else(|| format!("Panel '{}' not found in floating_panels for docking.", panel_title))?;
+        // 1. Remove panel from floating_panels, get the Panel data and state
+        let floating_state = self.floating_panels.remove(&panel_id)
+            .ok_or_else(|| format!("Panel '{:?}' not found in floating_panels for docking.", panel_id))?;
         let panel_to_dock = floating_state.panel;
-        println!("[DEBUG] Removed '{}' from floating panels.", panel_title);
+        let last_parent_id = floating_state.last_parent_id; // Get the last parent ID
+        println!("[DEBUG] Removed '{:?}' from floating panels.", panel_id);
 
-        // 2. Find a target container
-        let target_container_id = self.find_dock_target()?;
+        // 2. Determine target container: Try last parent first, fallback to find_dock_target
+        let maybe_target_id = match last_parent_id {
+            Some(parent_id) => {
+                // Check if the last parent still exists and is a valid Tabs container
+                let is_valid_target = self.tree.tiles.get(parent_id)
+                    .map_or(false, |tile| matches!(tile, Tile::Container(Container::Tabs(_))));
+                if is_valid_target {
+                    println!("[DEBUG] Using last known parent {:?} as dock target for {:?}", parent_id, panel_id);
+                    Ok(parent_id) // Use the last parent ID
+                } else {
+                    println!("[WARN] Last parent {:?} for {:?} is invalid/gone. Falling back to find_dock_target.", parent_id, panel_id);
+                    self.find_dock_target() // Fallback - call find_dock_target and pass its Result
+                }
+            }
+            None => {
+                println!("[DEBUG] No last parent known for {:?}. Using find_dock_target.", panel_id);
+                self.find_dock_target() // No last parent known, call find_dock_target
+            }
+        };
 
-        // 3. Insert the Panel as a new Pane tile
-        // Ensure we use the AppPanel trait object correctly
-        let new_pane_id = self.tree.tiles.insert_pane(panel_to_dock);
-        println!("[DEBUG] Inserted new pane tile {:?} for '{}'.", new_pane_id, panel_title);
+        // 3. Attempt to dock based on the target finding result
+        match maybe_target_id {
+            Ok(target_container_id) => {
+                // --- Dock into existing Tabs container --- 
+                println!("[DEBUG] Docking {:?} into existing container {:?}", panel_id, target_container_id);
+                let new_pane_id = self.tree.tiles.insert_pane(panel_to_dock);
+                println!("[DEBUG] Inserted new pane tile {:?} for '{:?}'.", new_pane_id, panel_id);
 
-        // 4. Add the new Pane to the target container
-        if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(target_container_id) {
-            tabs.add_child(new_pane_id);
-            tabs.set_active(new_pane_id); // Activate the newly docked tab (Removed Some())
-            println!("[DEBUG] Added pane {:?} to tabs container {:?} and activated it.", new_pane_id, target_container_id);
-        } else {
-            // Error handling: If the target isn't a Tabs container (shouldn't happen with current find_dock_target)
-            // or if adding fails somehow, we need to recover.
-            eprintln!("[ERROR] Target container {:?} is not a Tabs container or could not be modified.", target_container_id);
-            
-            // Attempt to recover the panel
-            if let Some(Tile::Pane(recovered_panel)) = self.tree.tiles.remove(new_pane_id) {
-                 println!("[DEBUG] Recovering panel '{}' after failed dock attempt.", panel_title);
-                 let recovered_state = FloatingPanelState {
-                    panel: recovered_panel,
-                    is_open: true, // Keep it open as it failed to dock
-                    rect: floating_state.rect, // Preserve old rect
-                 };
-                 self.floating_panels.insert(panel_title.clone(), recovered_state);
-                 return Err(format!("Failed to add pane to target container {:?}. Panel recovered.", target_container_id));
-            } else {
-                 // Critical error - panel lost
-                 return Err(format!("CRITICAL ERROR: Failed to recover panel '{}' after failed dock to {:?}. Panel lost!", panel_title, target_container_id));
+                if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(target_container_id) {
+                    tabs.add_child(new_pane_id);
+                    tabs.set_active(new_pane_id);
+                    println!("[DEBUG] Added pane {:?} to tabs container {:?} and activated it.", new_pane_id, target_container_id);
+                    // Ensure the tree is simplified
+                    self.tree.simplify_children_of_tile(target_container_id, &self.tree_ctx.simplification_options());
+                    println!("[INFO] Successfully docked panel '{:?}' into container {:?}'", panel_id, target_container_id);
+                    Ok(())
+                } else {
+                    // Error handling: Target wasn't actually Tabs, or became invalid between check and get_mut.
+                    eprintln!("[ERROR] Target container {:?} is not Tabs or could not be modified.", target_container_id);
+                    // Attempt to recover the panel
+                    if let Some(Tile::Pane(recovered_panel)) = self.tree.tiles.remove(new_pane_id) {
+                         println!("[DEBUG] Recovering panel '{:?}' after failed dock attempt.", panel_id);
+                         let recovered_state = FloatingPanelState {
+                            panel: recovered_panel,
+                            is_open: true, 
+                            rect: floating_state.rect, 
+                            last_parent_id, 
+                         };
+                         self.floating_panels.insert(panel_id, recovered_state);
+                         Err(format!("Failed to add pane to target container {:?}. Panel recovered.", target_container_id))
+                    } else {
+                         Err(format!("CRITICAL ERROR: Failed to recover panel '{:?}' after failed dock to {:?}. Panel lost!", panel_id, target_container_id))
+                    }
+                }
+            }
+            Err(_) => {
+                // --- No suitable target found - Create new root --- 
+                println!("[WARN] No suitable docking target found for {:?}. Creating new root.", panel_id);
+                let mut current_tiles = std::mem::take(&mut self.tree.tiles);
+                let new_pane_id = current_tiles.insert_pane(panel_to_dock);
+                // Create the Tabs struct first
+                let mut new_tabs_struct = egui_tiles::Tabs::new(vec![new_pane_id]);
+                new_tabs_struct.active = Some(new_pane_id); // Make the new pane active
+                // Insert the container tile with the Tabs struct
+                let new_tabs_id = current_tiles.insert_new(Tile::Container(Container::Tabs(new_tabs_struct)));
+                self.tree = Tree::new("main_tree", new_tabs_id, current_tiles); // Recreate tree
+                println!("[INFO] Successfully docked panel '{:?}' by creating new root {:?}", panel_id, new_tabs_id);
+                Ok(())
+                // NOTE: Recovery path is complex if Tree::new fails. Assume it won't for now.
             }
         }
-
-        // 5. Ensure the tree is simplified if needed (optional, might happen on next ui call)
-        self.tree.simplify_children_of_tile(target_container_id, &self.tree_ctx.simplification_options());
-
-        println!("[INFO] Successfully docked panel '{}' into container {:?}", panel_title, target_container_id);
-        Ok(())
     }
 
     // Handler for undocking a panel
-    fn handle_undock_panel(&mut self, panel_title: String, tile_id: TileId) -> Result<(), String> {
-        println!("[INFO] Attempting to undock panel '{}' (Tile ID: {:?})", panel_title, tile_id);
+    fn handle_undock_panel(&mut self, panel_id: PanelId, tile_id: TileId) -> Result<(), String> {
+        println!("[INFO] Attempting to undock panel '{:?}' (Tile ID: {:?})", panel_id, tile_id);
 
         // 1. Find the parent ID
         let parent_id = self.find_parent_of(tile_id).ok_or_else(|| 
@@ -631,13 +714,14 @@ impl App {
             panel: panel_to_move,
             is_open: true,
             rect: default_rect, // TODO: Improve default position/size later
+            last_parent_id: Some(parent_id), // Remember where it was docked
         };
 
         // 5. Add to floating_panels map
-        if self.floating_panels.insert(panel_title.clone(), new_floating_state).is_some() {
-            eprintln!("[WARN] Panel title '{}' already existed in floating_panels. Overwriting.", panel_title);
+        if self.floating_panels.insert(panel_id, new_floating_state).is_some() {
+            eprintln!("[WARN] Panel '{:?}' already existed in floating_panels. Overwriting.'", panel_id);
         }
-        println!("[INFO] Added panel '{}' to floating_panels (open).", panel_title);
+        println!("[INFO] Added panel '{:?}' to floating_panels (open).'", panel_id);
 
         // 6. Optional: Simplify the parent container now that a child is removed.
         //    We might defer this or rely on implicit simplification during the next tree.ui call.
@@ -647,32 +731,197 @@ impl App {
         Ok(())
     }
 
-    // Handler for closing a panel (either docked or floating)
-    fn handle_close_panel(&mut self, panel_title: String, is_floating: bool) -> Result<(), String> {
-        if is_floating {
-            // Mark the floating panel as closed, but keep its state
-            if let Some(state) = self.floating_panels.get_mut(&panel_title) {
-                if state.is_open { // Only act if it was open
-                    state.is_open = false;
-                    println!("[INFO] Marked floating panel '{}' as closed.", panel_title);
-                    Ok(())
+    // Handler for reopening a closed panel
+    fn handle_reopen_panel(&mut self, panel_id: PanelId) -> Result<(), String> {
+        println!("[INFO] Attempting to reopen panel '{:?}'", panel_id);
+
+        let mut target_parent_id_opt: Option<TileId> = None; // Store target parent if docking
+
+        // 1. Check current state in floating_panels
+        if let Some(state) = self.floating_panels.get_mut(&panel_id) {
+            if state.is_open {
+                println!("[INFO] Panel '{:?}' is already open.", panel_id);
+                return Ok(()); // Already open, nothing to do
+            }
+            println!("[DEBUG] Reopen: Panel {:?} found, currently closed.", panel_id);
+
+            // 2. Check if it was previously docked
+            if let Some(parent_id) = state.last_parent_id {
+                println!("[DEBUG] Reopen: Checking parent validity for panel {:?}", panel_id);
+                // 3. Check if the parent container still exists and is valid (Tabs)
+                let parent_is_valid_tabs = self.tree.tiles.get(parent_id)
+                    .map_or(false, |tile| matches!(tile, Tile::Container(Container::Tabs(_))));
+
+                if parent_is_valid_tabs {
+                    println!("[DEBUG] Reopen: Parent container {:?} is valid. Preparing for re-dock.", parent_id);
+                    target_parent_id_opt = Some(parent_id);
                 } else {
-                    println!("[DEBUG] Floating panel '{}' was already closed.", panel_title);
-                    Ok(())
+                    println!("[WARN] Reopen: Parent container {:?} for panel {:?} no longer valid. Reopening as floating.", parent_id, panel_id);
+                    state.is_open = true; // Set open here for floating case
+                    state.last_parent_id = None; // Clear invalid parent
                 }
             } else {
-                Err(format!("Floating panel '{}' not found to close.", panel_title))
+                println!("[DEBUG] Reopen: Panel {:?} was last floating. Reopening as floating.", panel_id);
+                state.is_open = true; // Set open here for floating case
             }
         } else {
-            // TODO: Implement closing a DOCKED panel (Phase 5)
-            println!("[WARN] Closing docked panels not yet implemented (Panel: '{}').", panel_title);
-            Ok(())
+            return Err(format!("Cannot reopen panel '{:?}': state not found.", panel_id));
+        }
+
+        // --- Perform Docking (if target parent was valid) --- 
+        if let Some(target_parent_id) = target_parent_id_opt {
+            println!("[DEBUG] Reopen: Proceeding with re-docking logic for {:?}.", panel_id);
+            // Remove state from floating_panels now, taking ownership of the panel
+            if let Some(state_to_dock) = self.floating_panels.remove(&panel_id) {
+                let panel_to_dock = state_to_dock.panel;
+                println!("[DEBUG] Attempting to dock {:?} into {:?}", panel_id, target_parent_id);
+                
+                // Insert pane into tree
+                let new_pane_id = self.tree.tiles.insert_pane(panel_to_dock);
+                
+                // Add pane to target container
+                if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(target_parent_id) {
+                    tabs.add_child(new_pane_id);
+                    tabs.set_active(new_pane_id);
+                    println!("[INFO] Successfully re-docked panel '{:?}' into container {:?}", panel_id, target_parent_id);
+                    self.tree.simplify_children_of_tile(target_parent_id, &self.tree_ctx.simplification_options());
+                    // Docking successful
+                } else {
+                    eprintln!("[ERROR] Reopen: Failed to get target Tabs container {:?} during re-dock. Reverting to floating.", target_parent_id);
+                    // Docking failed: Put the panel back into floating_panels state
+                    // Retrieve the panel we just inserted (and remove it from tree)
+                    let recovered_panel = match self.tree.tiles.remove(new_pane_id) {
+                        Some(Tile::Pane(p)) => p,
+                        _ => return Err(format!("CRITICAL: Failed to recover panel {:?} after failed re-dock target lookup.", panel_id))
+                    };
+                    let recovered_state = FloatingPanelState {
+                         panel: recovered_panel, // Give panel back
+                         is_open: true, // Keep it open
+                         rect: None, // TODO: Restore previous rect if available?
+                         last_parent_id: None, // Clear parent as docking failed
+                    };
+                    self.floating_panels.insert(panel_id, recovered_state);
+                    return Err(format!("Failed to find/modify target container {:?} for re-dock.", target_parent_id));
+                }
+            } else {
+                return Err(format!("Logic error: State for {:?} disappeared during reopen->dock.", panel_id));
+            }
+        } else {
+             println!("[INFO] Panel '{:?}' reopened as floating window (is_open should be true).", panel_id);
+        }
+
+        Ok(())
+    }
+
+    // Handler for closing a panel (either docked or floating)
+    fn handle_close_panel(&mut self, panel_id: PanelId, tile_id: Option<TileId>) -> Result<(), String> {
+        match tile_id {
+            None => {
+                // --- Handle closing a FLOATING panel --- 
+                // Mark the floating panel as closed, but keep its state
+                if let Some(state) = self.floating_panels.get_mut(&panel_id) {
+                    if state.is_open { // Only act if it was open
+                        state.is_open = false;
+                        println!("[INFO] Marked floating panel '{:?}' as closed.", panel_id);
+                        Ok(())
+                    } else {
+                        println!("[DEBUG] Floating panel '{:?}' was already closed.", panel_id);
+                        Ok(())
+                    }
+                } else {
+                    Err(format!("Floating panel '{:?}' not found to close.", panel_id))
+                }
+            }
+            Some(tile_id_to_close) => {
+                // --- Handle closing a DOCKED panel --- 
+                println!("[INFO] Closing docked panel '{:?}' (Tile ID: {:?})", panel_id, tile_id_to_close);
+                
+                // 1. Find the parent ID
+                let parent_id = self.find_parent_of(tile_id_to_close).ok_or_else(|| 
+                    format!("Could not find parent for tile {:?} to close.", tile_id_to_close)
+                )?;
+
+                // 2. Remove the child from the parent container
+                if let Some(Tile::Container(parent_container)) = self.tree.tiles.get_mut(parent_id) {
+                    parent_container.remove_child(tile_id_to_close);
+                    println!("[DEBUG] Removed child {:?} from parent container {:?}", tile_id_to_close, parent_id);
+                } else {
+                     return Err(format!("Parent tile {:?} is not a container or not found.", parent_id));
+                }
+
+                // 3. Remove the tile itself and get the panel
+                let panel = match self.tree.tiles.remove(tile_id_to_close) {
+                    Some(Tile::Pane(panel)) => {
+                        println!("[DEBUG] Removed pane tile {:?} from tree.tiles map.", tile_id_to_close);
+                        panel
+                    },
+                    Some(_) => return Err(format!("Tile {:?} is not a Pane, cannot close.", tile_id_to_close)),
+                    None => return Err(format!("Tile {:?} not found in tree.tiles when closing.", tile_id_to_close)),
+                };
+
+                // 4. Update or insert into floating_panels using entry API to avoid clone
+                use std::collections::hash_map::Entry; 
+                match self.floating_panels.entry(panel_id) {
+                    Entry::Occupied(mut occupied) => {
+                        // Panel state already exists, update it
+                        println!("[DEBUG] Updating existing floating state for closed panel {:?}", panel_id);
+                        let state = occupied.get_mut();
+                        state.panel = panel; // Transfer ownership of the removed panel
+                        state.is_open = false;
+                        state.last_parent_id = Some(parent_id);
+                    }
+                    Entry::Vacant(vacant) => {
+                        // Panel state doesn't exist, insert a new one
+                        println!("[DEBUG] Creating new floating state for closed panel {:?}", panel_id);
+                        let new_state = FloatingPanelState {
+                            panel, // Transfer ownership of the removed panel
+                            is_open: false,
+                            rect: None,
+                            last_parent_id: Some(parent_id),
+                        };
+                        vacant.insert(new_state);
+                    }
+                }
+                println!("[INFO] Marked docked panel '{:?}' as closed, stored state.", panel_id);
+
+                // 5. Simplify the parent container
+                println!("[INFO] Simplifying parent container {:?} after child removal.", parent_id);
+                self.tree.simplify_children_of_tile(parent_id, &self.tree_ctx.simplification_options());
+
+                Ok(())
+            }
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // --- Top Menu Bar --- 
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("View", |ui| {
+                    let mut close_requested = false;
+                    // Iterate over floating_panels to find closed panels
+                    for (panel_id, state) in self.floating_panels.iter() {
+                        if !state.is_open {
+                            if ui.button(state.panel.title()).clicked() {
+                                println!("[DEBUG] Reopen requested via menu for panel: {:?}", panel_id);
+                                let context_lock = self.context.clone();
+                                context_lock.write().expect("Lock poisoned").events.borrow_mut().push(
+                                    UIEvent::ReopenPanel { panel_id: *panel_id }
+                                );
+                                close_requested = true;
+                            }
+                        }
+                    }
+                    if close_requested {
+                        ui.close_menu();
+                    }
+                });
+                // Add other menus here if needed (e.g., File, Edit)
+            });
+        });
+
         // Dark background
         let frame = egui::Frame::central_panel(ctx.style().as_ref())
             .inner_margin(0.0)
@@ -689,15 +938,16 @@ impl eframe::App for App {
         let mut events_to_queue = vec![];
         let context_clone = self.context.clone();
 
-        for (title, state) in &mut self.floating_panels {
+        for (panel_id, state) in &mut self.floating_panels {
             if state.is_open {
                 let mut still_open = true;
-                let window_id = egui::Id::new(title as &str);
+                let window_id = egui::Id::new(*panel_id);
 
-                let mut window = egui::Window::new(title)
+                let mut window = egui::Window::new(state.panel.title())
                     .id(window_id)
                     .open(&mut still_open)
                     .resizable(true)
+                    .default_height(300.0)
                     .default_size([250.0, 300.0]);
                 
                 if let Some(rect) = state.rect {
@@ -710,10 +960,10 @@ impl eframe::App for App {
                 });
 
                 if !still_open {
-                    println!("[DEBUG] Floating window '{}' closed by user.", title);
+                    println!("[DEBUG] Floating window '{:?}' closed by user.", panel_id);
                     events_to_queue.push(UIEvent::ClosePanel {
-                        panel_title: title.clone(),
-                        is_floating: true,
+                        panel_id: *panel_id,
+                        tile_id: None, // Indicate it was a floating panel
                     });
                 }
 
@@ -721,7 +971,7 @@ impl eframe::App for App {
                     if inner_response.response.rect.is_finite() {
                         state.rect = Some(inner_response.response.rect);
                     } else {
-                        eprintln!("[WARN] Invalid rect obtained for floating panel '{}': {:?}", title, inner_response.response.rect);
+                        eprintln!("[WARN] Invalid rect obtained for floating panel '{:?}: {:?}", panel_id, inner_response.response.rect);
                     }
                 }
             }

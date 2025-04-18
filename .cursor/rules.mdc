@@ -34,3 +34,21 @@ alwaysApply: true
       trunk serve --open --port 8081
       ```
     - **Do not** run `trunk serve` using the terminal tool. The user will run this command in their own terminal to benefit from the persistent server and hot-reloading on code changes. 
+
+## User Interaction
+
+*   **NEVER ask the user to manually edit or review code.** Use available tools (`read_file`, `grep_search`, etc.) to verify code state if uncertain.
+*   **Prioritize User Feedback:** Carefully consider user corrections regarding the current state of the code or previous interactions. Avoid repeating mistakes that have already been pointed out. If the user states something has changed or an edit wasn't applied, believe them and re-verify using tools before proceeding.
+
+## Code Editing
+
+*   **Prefer Smaller Edits:** Break down complex changes or debugging steps into the smallest logical, independently compilable units.
+*   **Targeted Debugging:** When addressing a bug potentially affecting multiple components, apply fixes to a single component first to isolate the cause and confirm the solution before generalizing.
+*   **Verify Before Edit (If Unsure):** If an edit fails or seems inconsistent with the expected state, use `read_file` or `grep_search` to re-verify the relevant code section *before* re-attempting the edit. The state might already match the target or have changed unexpectedly.
+
+## Terminal & Build
+
+*   **Read Terminal Output Correctly:** Always parse the *entire* terminal output. The final status and relevant error messages are often at the **bottom**. Pay attention to exit codes.
+*   **Web Testing:** When applicable for web projects, prefer using `trunk serve` for testing due to its fast hot-reloading capabilities, unless native testing is specifically requested or necessary.
+*   **Manage Background Processes:** Do not attempt to start duplicate background processes (like `trunk serve`). Assume the user manages existing processes. Only start background processes when explicitly requested.
+*   **Target-Specific Checks:** Be aware that `cargo check` (and similar build commands) without a specific `--target` might not report errors or warnings related to code conditionally compiled for other targets (e.g., `wasm32-unknown-unknown`). 

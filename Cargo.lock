@@ -2918,8 +2918,12 @@ dependencies = [
  "eframe",
  "egui",
  "egui_tiles",
+ "log",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
